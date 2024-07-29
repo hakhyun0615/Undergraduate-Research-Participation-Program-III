@@ -22,7 +22,7 @@ class RenderConfig:
     # Number of views to use
     n_views: int = 30  ##############################################################################################
     # Theta value for rendering during training
-    base_theta: float = 60
+    base_theta: float = 90  ##############################################################################################
     # Additional views to use before rotating around shape
     views_before: List[Tuple[float, float]] = field(default_factory=list)
     # Additional views to use after rotating around shape
