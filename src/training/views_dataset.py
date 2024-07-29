@@ -111,6 +111,7 @@ class MultiviewDataset:
         #     self.phis =[180,180]+self.phis
         #     self.thetas = [30,150]+self.thetas
 
+        '''
         for phi, theta in self.cfg.views_before:
             self.phis = [phi] + self.phis
             self.thetas = [theta] + self.thetas
@@ -119,6 +120,8 @@ class MultiviewDataset:
             self.thetas = self.thetas + [theta]
             # self.phis = [0, 0] + self.phis
             # self.thetas = [20, 160] + self.thetas
+        '''
+        ############################################################################################################
 
         self.size = len(self.phis)
 
