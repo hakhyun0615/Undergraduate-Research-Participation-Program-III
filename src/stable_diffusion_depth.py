@@ -437,7 +437,7 @@ class StableDiffusion(nn.Module):
 
         with torch.no_grad():
             target_latents = sample(latents, depth_mask, strength=strength, num_inference_steps=num_inference_steps,
-                                    update_mask=update_mask, check_mask=check_mask, masked_latents=masked_latents, genrate_mask=generate_mask)
+                                    update_mask=update_mask, check_mask=check_mask, masked_latents=masked_latents, generate_mask=generate_mask)
             target_rgb = self.decode_latents(target_latents)
 
         if latent_mode:
