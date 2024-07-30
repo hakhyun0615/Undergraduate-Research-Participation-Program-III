@@ -340,6 +340,8 @@ class StableDiffusion(nn.Module):
                     latents = self.scheduler.add_noise(latents, noise, latent_timestep)
 
             depth_mask = torch.cat([depth_mask] * 2)
+            # Ensure generate_mask has the same spatial dimensions as latents and gt_latents
+            generate_mask = F.interpolate(generate_mask, size=latents.shape[2:], mode='nearest')
 
             with torch.autocast('cuda'):
                 for i, t in tqdm(enumerate(timesteps)):
