@@ -258,8 +258,6 @@ class TEXTure:
         cropped_rgb_render = crop(rgb_render)
         cropped_depth_render = crop(depth_render)
         cropped_update_mask = crop(update_mask)
-        cropped_generate_mask = crop(generate_mask)
-        cropped_refine_mask = crop(refine_mask)
         self.log_train_image(cropped_rgb_render, name='cropped_input')
 
         checker_mask = None
@@ -276,7 +274,7 @@ class TEXTure:
                                                                     strength=1.0, update_mask=cropped_update_mask,
                                                                     fixed_seed=self.cfg.optim.seed,
                                                                     check_mask=checker_mask,
-                                                                    intermediate_vis=self.cfg.log.vis_diffusion_steps, generate_mask=cropped_generate_mask)
+                                                                    intermediate_vis=self.cfg.log.vis_diffusion_steps)
         self.log_train_image(cropped_rgb_output, name='direct_output')
         self.log_diffusion_steps(steps_vis)
 
@@ -417,8 +415,8 @@ class TEXTure:
         return checker_mask
 
     def project_back(self, render_cache: Dict[str, Any], background: Any, rgb_output: torch.Tensor,
-                     object_mask: torch.Tensor, update_mask: torch.Tensor, z_normals: torch.Tensor,
-                     z_normals_cache: torch.Tensor):
+                 object_mask: torch.Tensor, update_mask: torch.Tensor, z_normals: torch.Tensor,
+                 z_normals_cache: torch.Tensor):
         object_mask = torch.from_numpy(
             cv2.erode(object_mask[0, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8))).to(
             object_mask.device).unsqueeze(0).unsqueeze(0)
@@ -446,29 +444,61 @@ class TEXTure:
         # Update the normals
         z_normals_cache[:, 0, :, :] = torch.max(z_normals_cache[:, 0, :, :], z_normals[:, 0, :, :])
 
+        # Initialize VGG for perceptual loss
+        vgg = models.vgg16(pretrained=True).features.to(self.device).eval()
+        layers = {'0': 'conv1_1', '5': 'conv2_1', '10': 'conv3_1', '19': 'conv4_1', '28': 'conv5_1'}
+
+        # Function to extract features
+        def get_features(image, model, layers):
+            features = {}
+            x = image
+            for name, layer in model._modules.items():
+                x = layer(x)
+                if name in layers:
+                    features[layers[name]] = x
+            return features
+
         optimizer = torch.optim.Adam(self.mesh_model.get_params(), lr=self.cfg.optim.lr, betas=(0.9, 0.99),
-                                     eps=1e-15)
+                                 eps=1e-15)
         for _ in tqdm(range(200), desc='fitting mesh colors'):
             optimizer.zero_grad()
             outputs = self.mesh_model.render(background=background,
-                                             render_cache=render_cache)
+                                         render_cache=render_cache)
             rgb_render = outputs['image']
 
             mask = render_update_mask.flatten()
             masked_pred = rgb_render.reshape(1, rgb_render.shape[1], -1)[:, :, mask > 0]
             masked_target = rgb_output.reshape(1, rgb_output.shape[1], -1)[:, :, mask > 0]
             masked_mask = mask[mask > 0]
+
+            # L2 Loss
             loss = ((masked_pred - masked_target.detach()).pow(2) * masked_mask).mean()
 
+            # Perceptual Loss
+            features_pred = get_features(masked_pred, vgg, layers)
+            features_target = get_features(masked_target, vgg, layers)
+            perceptual_loss = 0
+            for layer in layers.values():
+                perceptual_loss += F.mse_loss(features_pred[layer], features_target[layer])
+            loss += perceptual_loss
+
+            # Cosine Similarity Loss
             meta_outputs = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
-                                                  use_meta_texture=True, render_cache=render_cache)
+                                              use_meta_texture=True, render_cache=render_cache)
             current_z_normals = meta_outputs['image']
             current_z_mask = meta_outputs['mask'].flatten()
             masked_current_z_normals = current_z_normals.reshape(1, current_z_normals.shape[1], -1)[:, :,
-                                       current_z_mask == 1][:, :1]
+                                   current_z_mask == 1][:, :1]
             masked_last_z_normals = z_normals_cache.reshape(1, z_normals_cache.shape[1], -1)[:, :,
-                                    current_z_mask == 1][:, :1]
-            loss += (masked_current_z_normals - masked_last_z_normals.detach()).pow(2).mean()
+                                current_z_mask == 1][:, :1]
+            cosine_similarity_loss = 1 - F.cosine_similarity(masked_current_z_normals, masked_last_z_normals.detach(), dim=1).mean()
+            loss += cosine_similarity_loss
+
+            # Total Variation Loss
+            tv_loss = torch.sum(torch.abs(rgb_render[:, :, :, :-1] - rgb_render[:, :, :, 1:])) + \
+                    torch.sum(torch.abs(rgb_render[:, :, :-1, :] - rgb_render[:, :, 1:, :]))
+            loss += tv_loss
+
             loss.backward()
             optimizer.step()
 
