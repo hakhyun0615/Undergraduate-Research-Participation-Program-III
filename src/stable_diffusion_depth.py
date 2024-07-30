@@ -326,6 +326,7 @@ class StableDiffusion(nn.Module):
                 # Strength has meaning only when latents are given
                 timesteps, num_inference_steps = self.get_timesteps(num_inference_steps, strength)
                 latent_timestep = timesteps[:1]
+                initial_latent_timestep = latent_timestep.clone()  # Save the initial latent timestep as a clone
                 if fixed_seed is not None:
                     seed_everything(fixed_seed)
                 noise = torch.randn_like(latents)
@@ -358,7 +359,8 @@ class StableDiffusion(nn.Module):
                             else:                                           
                                 curr_mask = update_mask
                         '''
-                        noised_truth = self.scheduler.add_noise(gt_latents, noise, t)
+                        current_t = initial_latent_timestep if i >= num_inference_steps / 2 else t
+                        noised_truth = self.scheduler.add_noise(gt_latents, noise, current_t)
                         if i < num_inference_steps / 2:
                             latents = latents * update_mask + gt_latents * (1 - update_mask)
                         else:
