@@ -258,6 +258,8 @@ class TEXTure:
         cropped_rgb_render = crop(rgb_render)
         cropped_depth_render = crop(depth_render)
         cropped_update_mask = crop(update_mask)
+        cropped_refine_mask = crop(refine_mask)
+        cropped_generate_mask = crop(generate_mask)
         self.log_train_image(cropped_rgb_render, name='cropped_input')
 
         checker_mask = None
@@ -274,7 +276,7 @@ class TEXTure:
                                                                     strength=1.0, update_mask=cropped_update_mask,
                                                                     fixed_seed=self.cfg.optim.seed,
                                                                     check_mask=checker_mask,
-                                                                    intermediate_vis=self.cfg.log.vis_diffusion_steps, refine_mask=refine_mask, generate_mask=generate_mask)
+                                                                    intermediate_vis=self.cfg.log.vis_diffusion_steps, refine_mask=cropped_refine_mask, generate_mask=cropped_generate_mask)
         self.log_train_image(cropped_rgb_output, name='direct_output')
         self.log_diffusion_steps(steps_vis)
 
