@@ -303,39 +303,38 @@ class StableDiffusion(nn.Module):
     '''
     
     def img2img_step(self, text_embeddings, inputs, depth_mask, guidance_scale=100, strength=0.5,
-            num_inference_steps=50, update_mask=None, latent_mode=False, check_mask=None,
-            fixed_seed=None, check_mask_iters=0.5, intermediate_vis=False,
-            refine_mask=None, generate_mask=None):
-        # Default refine_mask and generate_mask if not provided
-        if refine_mask is None:
-            refine_mask = torch.zeros_like(update_mask)
-        if generate_mask is None:
-            generate_mask = torch.zeros_like(update_mask)
-
-        # Define keep_mask as the inverse of update_mask
-        keep_mask = (update_mask == 0).float()
-
+                     num_inference_steps=50, update_mask=None, latent_mode=False, check_mask=None,
+                     fixed_seed=None, check_mask_iters=0.5, intermediate_vis=False, generate_mask=None, refin_mask=None):
+        # input is 1 3 512 512
+        # depth_mask is 1 1 512 512
+        # text_embeddings is 2 512
         intermediate_results = []
 
         def sample(latents, depth_mask, strength, num_inference_steps, update_mask=None, check_mask=None,
-                masked_latents=None):
+                   masked_latents=None):
             self.scheduler.set_timesteps(num_inference_steps)
             noise = None
             if latents is None:
+                # Last chanel is reserved for depth
                 latents = torch.randn(
-                    (text_embeddings.shape[0] // 2, self.unet.in_channels - 1, depth_mask.shape[2], depth_mask.shape[3]),
+                    (
+                        text_embeddings.shape[0] // 2, self.unet.in_channels - 1, depth_mask.shape[2],
+                        depth_mask.shape[3]),
                     device=self.device)
                 timesteps = self.scheduler.timesteps
             else:
+                # Strength has meaning only when latents are given
                 timesteps, num_inference_steps = self.get_timesteps(num_inference_steps, strength)
                 latent_timestep = timesteps[:1]
                 if fixed_seed is not None:
                     seed_everything(fixed_seed)
                 noise = torch.randn_like(latents)
                 if update_mask is not None:
+                    # NOTE: I think we might want to use same noise?
                     gt_latents = latents
                     latents = torch.randn(
-                        (text_embeddings.shape[0] // 2, self.unet.in_channels - 1, depth_mask.shape[2], depth_mask.shape[3]),
+                        (text_embeddings.shape[0] // 2, self.unet.in_channels - 1, depth_mask.shape[2],
+                         depth_mask.shape[3]),
                         device=self.device)
                 else:
                     latents = self.scheduler.add_noise(latents, noise, latent_timestep)
@@ -345,34 +344,51 @@ class StableDiffusion(nn.Module):
             with torch.autocast('cuda'):
                 for i, t in tqdm(enumerate(timesteps)):
                     is_inpaint_range = self.use_inpaint and (10 < i < 20)
+                    mask_constraints_iters = True  # i < 20
+                    is_inpaint_iter = is_inpaint_range  # and i %2 == 1
 
+                    if not is_inpaint_range and mask_constraints_iters:
+                        '''
+                        if update_mask is not None:
+                            noised_truth = self.scheduler.add_noise(gt_latents, noise, t)
+                            if check_mask is not None and i < int(len(timesteps) * check_mask_iters):
+                                curr_mask = check_mask
+                            else:                                           
+                                curr_mask = update_mask
+                        '''
+                        if i < num_inference_steps / 2:
+                            latents = latents * update_mask + gt_latents * (1 - update_mask)
+                        else:
+                            latents = latents * generate_mask + gt_latents * (1 - generate_mask)
+                        if i == num_inference_steps / 2:
+                            gt_latents = latents
+
+                    # expand the latents if we are doing classifier-free guidance to avoid doing two forward passes.
                     latent_model_input = torch.cat([latents] * 2)
-                    latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+                    latent_model_input = self.scheduler.scale_model_input(latent_model_input,
+                                                                          t)  # NOTE: This does nothing
 
-                    if is_inpaint_range:
+                    if is_inpaint_iter:
                         latent_mask = torch.cat([update_mask] * 2)
                         latent_image = torch.cat([masked_latents] * 2)
                         latent_model_input_inpaint = torch.cat([latent_model_input, latent_mask, latent_image], dim=1)
                         with torch.no_grad():
-                            noise_pred_inpaint = self.inpaint_unet(latent_model_input_inpaint, t, encoder_hidden_states=text_embeddings)['sample']
+                            noise_pred_inpaint = \
+                                self.inpaint_unet(latent_model_input_inpaint, t, encoder_hidden_states=text_embeddings)[
+                                    'sample']
                             noise_pred = noise_pred_inpaint
                     else:
                         latent_model_input_depth = torch.cat([latent_model_input, depth_mask], dim=1)
+                        # predict the noise residual
                         with torch.no_grad():
-                            noise_pred = self.unet(latent_model_input_depth, t, encoder_hidden_states=text_embeddings)['sample']
+                            noise_pred = self.unet(latent_model_input_depth, t, encoder_hidden_states=text_embeddings)[
+                                'sample']
 
+                    # perform guidance
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-                    # Apply masks and adjust noise_pred accordingly
-                    # Skip keep_mask regions entirely
-                    if i < num_inference_steps / 2:
-                        # First half: process both refine and generate regions
-                        noise_pred_refine = noise_pred_uncond * refine_mask + guidance_scale * (noise_pred_text - noise_pred_uncond) * refine_mask
-                        noise_pred_generate = noise_pred_uncond * generate_mask + guidance_scale * (noise_pred_text - noise_pred_uncond) * generate_mask
-                        noise_pred = noise_pred_refine + noise_pred_generate
-                    else:
-                        # Second half: process only generate regions
-                        noise_pred = noise_pred_uncond * generate_mask + guidance_scale * (noise_pred_text - noise_pred_uncond) * generate_mask
+                    # compute the previous noisy sample x_t -> x_t-1
 
                     if intermediate_vis:
                         vis_alpha_t = torch.sqrt(self.scheduler.alphas_cumprod)
@@ -389,14 +405,16 @@ class StableDiffusion(nn.Module):
 
             return latents
 
-        depth_mask = F.interpolate(depth_mask, size=(64, 64), mode='bicubic', align_corners=False)
+        depth_mask = F.interpolate(depth_mask, size=(64, 64), mode='bicubic',
+                                   align_corners=False)
         masked_latents = None
         if inputs is None:
             latents = None
         elif latent_mode:
             latents = inputs
         else:
-            pred_rgb_512 = F.interpolate(inputs, (512, 512), mode='bilinear', align_corners=False)
+            pred_rgb_512 = F.interpolate(inputs, (512, 512), mode='bilinear',
+                                         align_corners=False)
             latents = self.encode_imgs(pred_rgb_512)
             if self.use_inpaint:
                 update_mask_512 = F.interpolate(update_mask, (512, 512))
@@ -409,6 +427,10 @@ class StableDiffusion(nn.Module):
             check_mask = F.interpolate(check_mask, (64, 64), mode='nearest')
 
         depth_mask = 2.0 * (depth_mask - depth_mask.min()) / (depth_mask.max() - depth_mask.min()) - 1.0
+
+        # timestep ~ U(0.02, 0.98) to avoid very high/low noise level
+        # t = torch.randint(self.min_step, self.max_step + 1, [1], dtype=torch.long, device=self.device)
+        t = (self.min_step + self.max_step) // 2
 
         with torch.no_grad():
             target_latents = sample(latents, depth_mask, strength=strength, num_inference_steps=num_inference_steps,

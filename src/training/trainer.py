@@ -258,8 +258,8 @@ class TEXTure:
         cropped_rgb_render = crop(rgb_render)
         cropped_depth_render = crop(depth_render)
         cropped_update_mask = crop(update_mask)
-        cropped_refine_mask = crop(refine_mask)
         cropped_generate_mask = crop(generate_mask)
+        cropped_refine_mask = crop(refine_mask)
         self.log_train_image(cropped_rgb_render, name='cropped_input')
 
         checker_mask = None
