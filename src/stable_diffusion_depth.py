@@ -311,7 +311,7 @@ class StableDiffusion(nn.Module):
         intermediate_results = []
 
         def sample(latents, depth_mask, strength, num_inference_steps, update_mask=None, check_mask=None,
-                   masked_latents=None):
+                   masked_latents=None, generate_mask=None):
             self.scheduler.set_timesteps(num_inference_steps)
             noise = None
             if latents is None:
@@ -437,7 +437,7 @@ class StableDiffusion(nn.Module):
 
         with torch.no_grad():
             target_latents = sample(latents, depth_mask, strength=strength, num_inference_steps=num_inference_steps,
-                                    update_mask=update_mask, check_mask=check_mask, masked_latents=masked_latents)
+                                    update_mask=update_mask, check_mask=check_mask, masked_latents=masked_latents, genrate_mask=generate_mask)
             target_rgb = self.decode_latents(target_latents)
 
         if latent_mode:
