@@ -359,12 +359,13 @@ class StableDiffusion(nn.Module):
                             else:                                           
                                 curr_mask = update_mask
                         '''
-                        current_t = initial_latent_timestep if i >= num_inference_steps / 2 else t
+                        alpha = min(1.0, 2 * (i - num_inference_steps / 2) / num_inference_steps) if i >= num_inference_steps / 2 else 0.0
+                        current_t = (1 - alpha) * initial_latent_timestep + alpha * t
                         noised_truth = self.scheduler.add_noise(gt_latents, noise, current_t)
                         if i < num_inference_steps / 2:
-                            latents = latents * update_mask + gt_latents * (1 - update_mask)
+                            latents = latents * update_mask + noised_truth * (1 - update_mask)
                         else:
-                            latents = latents * generate_mask + gt_latents * (1 - generate_mask)
+                            latents = latents * generate_mask + noised_truth * (1 - generate_mask)
                         if i == num_inference_steps / 2:
                             gt_latents = latents
 
