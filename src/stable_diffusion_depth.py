@@ -167,7 +167,8 @@ class StableDiffusion(nn.Module):
             target_latents = sample(prev_latents, depth_mask, step=step)
         return target_latents
 
-    def img2img_step(self, text_embeddings, inputs, depth_mask, guidance_scale=100, strength=0.5,
+    '''
+        def img2img_step(self, text_embeddings, inputs, depth_mask, guidance_scale=100, strength=0.5,
                      num_inference_steps=50, update_mask=None, latent_mode=False, check_mask=None,
                      fixed_seed=None, check_mask_iters=0.5, intermediate_vis=False):
         # input is 1 3 512 512
@@ -299,6 +300,126 @@ class StableDiffusion(nn.Module):
             return target_rgb, target_latents
         else:
             return target_rgb, intermediate_results
+    '''
+    
+    def img2img_step(self, text_embeddings, inputs, depth_mask, guidance_scale=100, strength=0.5,
+            num_inference_steps=50, update_mask=None, latent_mode=False, check_mask=None,
+            fixed_seed=None, check_mask_iters=0.5, intermediate_vis=False,
+            refine_mask=None, generate_mask=None):
+        # Default refine_mask and generate_mask if not provided
+        if refine_mask is None:
+            refine_mask = torch.zeros_like(update_mask)
+        if generate_mask is None:
+            generate_mask = torch.zeros_like(update_mask)
+
+        # Define keep_mask as the inverse of update_mask
+        keep_mask = (update_mask == 0).float()
+
+        intermediate_results = []
+
+        def sample(latents, depth_mask, strength, num_inference_steps, update_mask=None, check_mask=None,
+                masked_latents=None):
+            self.scheduler.set_timesteps(num_inference_steps)
+            noise = None
+            if latents is None:
+                latents = torch.randn(
+                    (text_embeddings.shape[0] // 2, self.unet.in_channels - 1, depth_mask.shape[2], depth_mask.shape[3]),
+                    device=self.device)
+                timesteps = self.scheduler.timesteps
+            else:
+                timesteps, num_inference_steps = self.get_timesteps(num_inference_steps, strength)
+                latent_timestep = timesteps[:1]
+                if fixed_seed is not None:
+                    seed_everything(fixed_seed)
+                noise = torch.randn_like(latents)
+                if update_mask is not None:
+                    gt_latents = latents
+                    latents = torch.randn(
+                        (text_embeddings.shape[0] // 2, self.unet.in_channels - 1, depth_mask.shape[2], depth_mask.shape[3]),
+                        device=self.device)
+                else:
+                    latents = self.scheduler.add_noise(latents, noise, latent_timestep)
+
+            depth_mask = torch.cat([depth_mask] * 2)
+
+            with torch.autocast('cuda'):
+                for i, t in tqdm(enumerate(timesteps)):
+                    is_inpaint_range = self.use_inpaint and (10 < i < 20)
+
+                    latent_model_input = torch.cat([latents] * 2)
+                    latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+
+                    if is_inpaint_range:
+                        latent_mask = torch.cat([update_mask] * 2)
+                        latent_image = torch.cat([masked_latents] * 2)
+                        latent_model_input_inpaint = torch.cat([latent_model_input, latent_mask, latent_image], dim=1)
+                        with torch.no_grad():
+                            noise_pred_inpaint = self.inpaint_unet(latent_model_input_inpaint, t, encoder_hidden_states=text_embeddings)['sample']
+                            noise_pred = noise_pred_inpaint
+                    else:
+                        latent_model_input_depth = torch.cat([latent_model_input, depth_mask], dim=1)
+                        with torch.no_grad():
+                            noise_pred = self.unet(latent_model_input_depth, t, encoder_hidden_states=text_embeddings)['sample']
+
+                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+
+                    # Apply masks and adjust noise_pred accordingly
+                    # Skip keep_mask regions entirely
+                    if i < num_inference_steps / 2:
+                        # First half: process both refine and generate regions
+                        noise_pred_refine = noise_pred_uncond * refine_mask + guidance_scale * (noise_pred_text - noise_pred_uncond) * refine_mask
+                        noise_pred_generate = noise_pred_uncond * generate_mask + guidance_scale * (noise_pred_text - noise_pred_uncond) * generate_mask
+                        noise_pred = noise_pred_refine + noise_pred_generate
+                    else:
+                        # Second half: process only generate regions
+                        noise_pred = noise_pred_uncond * generate_mask + guidance_scale * (noise_pred_text - noise_pred_uncond) * generate_mask
+
+                    if intermediate_vis:
+                        vis_alpha_t = torch.sqrt(self.scheduler.alphas_cumprod)
+                        vis_sigma_t = torch.sqrt(1 - self.scheduler.alphas_cumprod)
+                        a_t, s_t = vis_alpha_t[t], vis_sigma_t[t]
+                        vis_latents = (latents - s_t * noise) / a_t
+                        vis_latents = 1 / 0.18215 * vis_latents
+                        image = self.vae.decode(vis_latents).sample
+                        image = (image / 2 + 0.5).clamp(0, 1)
+                        image = image.cpu().permute(0, 2, 3, 1).numpy()
+                        image = Image.fromarray((image[0] * 255).round().astype("uint8"))
+                        intermediate_results.append(image)
+                    latents = self.scheduler.step(noise_pred, t, latents)['prev_sample']
+
+            return latents
+
+        depth_mask = F.interpolate(depth_mask, size=(64, 64), mode='bicubic', align_corners=False)
+        masked_latents = None
+        if inputs is None:
+            latents = None
+        elif latent_mode:
+            latents = inputs
+        else:
+            pred_rgb_512 = F.interpolate(inputs, (512, 512), mode='bilinear', align_corners=False)
+            latents = self.encode_imgs(pred_rgb_512)
+            if self.use_inpaint:
+                update_mask_512 = F.interpolate(update_mask, (512, 512))
+                masked_inputs = pred_rgb_512 * (update_mask_512 < 0.5) + 0.5 * (update_mask_512 >= 0.5)
+                masked_latents = self.encode_imgs(masked_inputs)
+
+        if update_mask is not None:
+            update_mask = F.interpolate(update_mask, (64, 64), mode='nearest')
+        if check_mask is not None:
+            check_mask = F.interpolate(check_mask, (64, 64), mode='nearest')
+
+        depth_mask = 2.0 * (depth_mask - depth_mask.min()) / (depth_mask.max() - depth_mask.min()) - 1.0
+
+        with torch.no_grad():
+            target_latents = sample(latents, depth_mask, strength=strength, num_inference_steps=num_inference_steps,
+                                    update_mask=update_mask, check_mask=check_mask, masked_latents=masked_latents)
+            target_rgb = self.decode_latents(target_latents)
+
+        if latent_mode:
+            return target_rgb, target_latents
+        else:
+            return target_rgb, intermediate_results
+
 
     def train_step(self, text_embeddings, inputs, depth_mask, guidance_scale=100):
 
