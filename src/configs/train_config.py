@@ -20,7 +20,7 @@ class RenderConfig:
     # The front offset, use to rotate shape from code
     front_offset: float = 0.0
     # Number of views to use
-    n_views: int = 30  ##############################################################################################
+    n_views: int = 10  ##############################################################################################
     # Theta value for rendering during training
     base_theta: float = 90  ##############################################################################################
     # Additional views to use before rotating around shape

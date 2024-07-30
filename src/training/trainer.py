@@ -274,7 +274,7 @@ class TEXTure:
                                                                     strength=1.0, update_mask=cropped_update_mask,
                                                                     fixed_seed=self.cfg.optim.seed,
                                                                     check_mask=checker_mask,
-                                                                    intermediate_vis=self.cfg.log.vis_diffusion_steps, refine_mask, generate_mask)
+                                                                    intermediate_vis=self.cfg.log.vis_diffusion_steps, refine_mask=refine_mask, generate_mask=generate_mask)
         self.log_train_image(cropped_rgb_output, name='direct_output')
         self.log_diffusion_steps(steps_vis)
 
