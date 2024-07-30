@@ -304,7 +304,7 @@ class StableDiffusion(nn.Module):
     
     def img2img_step(self, text_embeddings, inputs, depth_mask, guidance_scale=100, strength=0.5,
                      num_inference_steps=50, update_mask=None, latent_mode=False, check_mask=None,
-                     fixed_seed=None, check_mask_iters=0.5, intermediate_vis=False, generate_mask=None, refin_mask=None):
+                     fixed_seed=None, check_mask_iters=0.5, intermediate_vis=False, generate_mask=None):
         # input is 1 3 512 512
         # depth_mask is 1 1 512 512
         # text_embeddings is 2 512
@@ -356,6 +356,7 @@ class StableDiffusion(nn.Module):
                             else:                                           
                                 curr_mask = update_mask
                         '''
+                        noised_truth = self.scheduler.add_noise(gt_latents, noise, t)
                         if i < num_inference_steps / 2:
                             latents = latents * update_mask + gt_latents * (1 - update_mask)
                         else:
